@@ -13,24 +13,28 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
+type Option struct {
+	CookieJar *cookiejar.Options
+	Context   []chromedp.ContextOption
+}
+
 func FetchJar(
 	ctxWithAllocator context.Context,
 	url *url.URL,
 	cookieKey string,
 	username string,
 	password string,
-	cookieOpts *cookiejar.Options,
-	contextOpts []chromedp.ContextOption,
+	opt *Option,
 ) (*cookiejar.Jar, error) {
 	// ctxWithAllocator must have allocator info
 	if pc := chromedp.FromContext(ctxWithAllocator); pc == nil {
 		return nil, chromedp.ErrInvalidContext
 	}
 
-	ctxWithAllocator, cancel := chromedp.NewContext(ctxWithAllocator, contextOpts...)
+	ctxWithAllocator, cancel := chromedp.NewContext(ctxWithAllocator, opt.Context...)
 	defer cancel()
 
-	j, err := cookiejar.New(cookieOpts)
+	j, err := cookiejar.New(opt.CookieJar)
 	if err != nil {
 		return nil, err
 	}
