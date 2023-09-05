@@ -2,16 +2,19 @@ package cookiefetcher
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
 func FetchJar(
-	ctx context.Context,
+	ctxWithAllocator context.Context,
 	url *url.URL,
 	cookieKey string,
 	username string,
@@ -19,13 +22,12 @@ func FetchJar(
 	cookieOpts *cookiejar.Options,
 	contextOpts []chromedp.ContextOption,
 ) (*cookiejar.Jar, error) {
-	ctx, cancel := chromedp.NewExecAllocator(
-		ctx,
-		chromedp.ExecPath("./headless-shell"),
-	)
-	defer cancel()
+	// ctxWithAllocator must have allocator info
+	if pc := chromedp.FromContext(ctxWithAllocator); pc == nil {
+		return nil, chromedp.ErrInvalidContext
+	}
 
-	ctx, cancel = chromedp.NewContext(ctx, contextOpts...)
+	ctxWithAllocator, cancel := chromedp.NewContext(ctxWithAllocator, contextOpts...)
 	defer cancel()
 
 	j, err := cookiejar.New(cookieOpts)
@@ -33,14 +35,35 @@ func FetchJar(
 		return nil, err
 	}
 
+	chromedp.ListenTarget(ctxWithAllocator, func(ev interface{}) {
+		switch ev := ev.(type) {
+		case *page.EventJavascriptDialogOpening:
+			go func(ev *page.EventJavascriptDialogOpening) {
+				log.Println("accepting dialog...", ev.Message)
+				if err := chromedp.Run(ctxWithAllocator, page.HandleJavaScriptDialog(true)); err != nil {
+					log.Println(err)
+				}
+			}(ev)
+		}
+	})
+
 	if err := chromedp.Run(
-		ctx,
+		ctxWithAllocator,
 		chromedp.Navigate(url.String()),
-		chromedp.Text("input[autocomplete=\"username\"]", &username, chromedp.ByQuery),
-		chromedp.Text("input[autocomplete=\"current-password\"]", &password, chromedp.ByQuery),
-		chromedp.Click("button[type=\"submit\"]", chromedp.ByQuery),
-		chromedp.Click("button[type=\"data-type\"]", chromedp.ByQuery),
+		chromedp.SendKeys("input[autocomplete=\"username\"]", username, chromedp.NodeVisible),
+		chromedp.SendKeys("input[autocomplete=\"current-password\"]", password, chromedp.NodeVisible),
+		chromedp.Click("button[type=\"submit\"]", chromedp.NodeVisible),
+	); err != nil {
+		return nil, err
+	}
+
+	if _, err := chromedp.RunResponse(
+		ctxWithAllocator,
+		chromedp.Click("button[data-type=\"primary\"][type=\"button\"]", chromedp.NodeVisible),
 		chromedp.ActionFunc(func(ctx context.Context) error {
+			var count int
+
+		Retry:
 			cookies, err := network.GetCookies().Do(ctx)
 			if err != nil {
 				return err
@@ -57,6 +80,17 @@ func FetchJar(
 						},
 					})
 				}
+			}
+
+			if len(j.Cookies(url)) == 0 {
+				count++
+				if count > 10 {
+					return chromedp.ErrNoResults
+				}
+
+				time.Sleep(1 * time.Second)
+				log.Println("retrying...", count)
+				goto Retry
 			}
 
 			return nil
